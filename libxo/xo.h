@@ -282,6 +282,18 @@ xo_no_setlocale (void);
 int
 xo_parse_args (int argc, char **argv);
 
+void
+xo_enter (const char *name);
+
+void
+xo_enter_h (xo_handle_t *xop, const char *name);
+
+void
+xo_leave (const char *name);
+
+void
+xo_leave_h (xo_handle_t *xop, const char *name);
+
 /*
  * This is the "magic" number returned by libxo-supporting commands
  * when passed the equally magic "--libxo-check" option.  If you

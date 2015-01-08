@@ -1,3 +1,4 @@
+#define ENTERLEAVE
 /*
  * Copyright (c) 2014, Juniper Networks, Inc.
  * All rights reserved.
@@ -67,6 +68,10 @@ typedef struct xo_stack_s {
     xo_xsf_flags_t xs_flags;	/* Flags for this frame */
     char *xs_name;		/* Name (for XPath value) */
     char *xs_keys;		/* XPath predicate for any key fields */
+#ifdef ENTERLEAVE
+    int enter_count;		/* Number of open xo_enter calls */
+    int enter_nameidx;		/* Index to name of xo_enter frame */
+#endif
 } xo_stack_t;
 
 /*
@@ -4114,6 +4119,62 @@ xo_set_writer (xo_handle_t *xop, void *opaque, xo_write_func_t write_func,
     xop->xo_write = write_func;
     xop->xo_close = close_func;
 }
+
+#ifdef ENTERLEAVE
+void
+xo_enter_h (xo_handle_t *xop, const char *name)
+{
+    xo_stack_t *xsp;
+
+    if (name == NULL)	// dummy test to prevent unused "name" error
+	return;
+
+    xsp = xop->xo_stack + xop->xo_depth;
+    xsp->enter_count++;
+//    set_enter_name(name, xsp->enter_nameidx + xsp->enter_count]);
+}
+
+void
+xo_leave_h (xo_handle_t *xop, const char *name)
+{
+    xo_stack_t *xsp;
+
+    if (name == NULL)
+	return;
+
+    while (xop->xo_depth >= 0) {
+	int flags;
+
+	xsp = xop->xo_stack + xop->xo_depth;
+	if (xsp->enter_count > 0)
+	    break;
+
+        flags = xsp->xs_flags;
+	if (flags & XSF_INSTANCE)
+	    xo_close_instance_h(xop, xsp->xs_name);
+	else if (flags & XSF_LIST)
+	    xo_close_list_h(xop, xsp->xs_name);
+	else
+	    xo_close_container_h(xop, xsp->xs_name);
+    }
+    if (xop->xo_depth < 0)
+	xo_err(1, "stack underrun in leave");
+//  check_enter_name(name, xsp->enter_nameidx + xsp->enter_count]);
+    xsp->enter_count--;
+}
+
+void
+xo_enter (const char *name)
+{
+    xo_enter_h(xo_default(NULL), name);
+}
+
+void
+xo_leave (const char *name)
+{
+    xo_leave_h(xo_default(NULL), name);
+}
+#endif
 
 void
 xo_set_allocator (xo_realloc_func_t realloc_func, xo_free_func_t free_func)
