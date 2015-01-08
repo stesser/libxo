@@ -219,6 +219,12 @@ xo_buf_append_div (xo_handle_t *xop, const char *class, xo_xff_flags_t flags,
 static void
 xo_anchor_clear (xo_handle_t *xop);
 
+static void
+xo_close_other_list_h (xo_handle_t *xop, const char *name);
+
+static void
+xo_open_implicit_list_h (xo_handle_t *xop, const char *name);
+
 /*
  * Callback to write data to a FILE pointer
  */
@@ -1404,6 +1410,8 @@ xo_name_to_flag (const char *name)
 	return XOF_UNITS;
     if (strcmp(name, "underscores") == 0)
 	return XOF_UNDERSCORES;
+    if (strcmp(name, "autolist") == 0)
+	return XOF_AUTO_LIST;
 
     return 0;
 }
@@ -2791,6 +2799,16 @@ xo_format_value (xo_handle_t *xop, const char *name, int nlen,
 	    xo_failure(xop, "missing field name: %s", format);
 	    name = missing;
 	    nlen = sizeof(missing) - 1;
+	} else if (name[nlen] != 0) {
+	    char * cp = alloca(nlen + 1);
+	    memcpy(cp, name, nlen);
+	    cp[nlen] = 0;
+	    name = cp;
+	}
+
+	if (flags & XFF_LEAF_LIST) {
+	    xo_close_other_list_h(xop, name);
+	    xo_open_implicit_list_h(xop, name);
 	}
 
 	if (pretty)
@@ -2850,6 +2868,23 @@ xo_format_value (xo_handle_t *xop, const char *name, int nlen,
 	    flen = strlen(format);
 	}
 
+	if (nlen == 0) {
+	    static char missing[] = "missing-field-name";
+	    xo_failure(xop, "missing field name: %s", format);
+	    name = missing;
+	    nlen = sizeof(missing) - 1;
+	} else if (name[nlen] != 0) {
+	    char * cp = alloca(nlen + 1);
+	    memcpy(cp, name, nlen);
+	    cp[nlen] = 0;
+	    name = cp;
+	}
+
+	if (flags & XFF_LEAF_LIST) {
+	    xo_close_other_list_h(xop, name);
+	    xo_open_implicit_list_h(xop, name);
+	}
+
 	int first = !(xop->xo_stack[xop->xo_depth].xs_flags & XSF_NOT_FIRST);
 
 	xo_format_prep(xop, flags);
@@ -2866,13 +2901,6 @@ xo_format_value (xo_handle_t *xop, const char *name, int nlen,
 	    quote = 1;
 	else
 	    quote = 0;
-
-	if (nlen == 0) {
-	    static char missing[] = "missing-field-name";
-	    xo_failure(xop, "missing field name: %s", format);
-	    name = missing;
-	    nlen = sizeof(missing) - 1;
-	}
 
 	if (flags & XFF_LEAF_LIST) {
 	    if (first && pretty)
@@ -3344,6 +3372,7 @@ xo_do_emit (xo_handle_t *xop, const char *fmt)
 	    return -1;
 	}
 
+// <se> content == current list tag? ==> leaf-node in list ==> XFF_LEAF_LIST
 	if (*sp == '/') {
 	    for (ep = ++sp; *sp; sp++) {
 		if (*sp == '}' || *sp == '/')
@@ -3481,6 +3510,7 @@ xo_attr_hv (xo_handle_t *xop, const char *name, const char *fmt, va_list vap)
     const int extra = 5; 	/* space, equals, quote, quote, and nul */
     xop = xo_default(xop);
 
+// <se> ??? generate appropriate key/value pair for JSON
     if (xop->xo_style != XO_STYLE_XML)
 	return 0;
 
@@ -3564,7 +3594,7 @@ xo_depth_change (xo_handle_t *xop, const char *name,
 	xsp->xs_flags = flags;
 	xo_stack_set_flags(xop);
 
-	unsigned save = (xop->xo_flags & (XOF_XPATH | XOF_WARN | XOF_DTRT));
+	unsigned save = (xop->xo_flags & (XOF_XPATH | XOF_WARN | XOF_DTRT | XOF_AUTO_LIST));
 	save |= (flags & XSF_DTRT);
 
 	if (name && save) {
@@ -3651,6 +3681,8 @@ xo_open_container_hf (xo_handle_t *xop, xo_xof_flags_t flags, const char *name)
 	name = XO_FAILURE_NAME;
     }
 
+    xo_close_other_list_h(xop, name);
+
     flags |= xop->xo_flags;	/* Pick up handle flags */
 
     switch (xop->xo_style) {
@@ -3672,7 +3704,8 @@ xo_open_container_hf (xo_handle_t *xop, xo_xof_flags_t flags, const char *name)
 
 	if (xop->xo_stack[xop->xo_depth].xs_flags & XSF_NOT_FIRST)
 	    pre_nl = (xop->xo_flags & XOF_PRETTY) ? ",\n" : ", ";
-	xop->xo_stack[xop->xo_depth].xs_flags |= XSF_NOT_FIRST;
+	else
+	    xop->xo_stack[xop->xo_depth].xs_flags |= XSF_NOT_FIRST;
 
 	rc = xo_printf(xop, "%s%*s\"%s\": {%s",
 		       pre_nl, xo_indent(xop), "", name, ppn);
@@ -3736,6 +3769,8 @@ xo_close_container_h (xo_handle_t *xop, const char *name)
 	} else
 	    name = XO_FAILURE_NAME;
     }
+
+    xo_close_other_list_h(xop, "");
 
     switch (xop->xo_style) {
     case XO_STYLE_XML:
@@ -3807,7 +3842,8 @@ xo_open_list_hf (xo_handle_t *xop, xo_xsf_flags_t flags, const char *name)
 
     if (xop->xo_stack[xop->xo_depth].xs_flags & XSF_NOT_FIRST)
 	pre_nl = (xop->xo_flags & XOF_PRETTY) ? ",\n" : ", ";
-    xop->xo_stack[xop->xo_depth].xs_flags |= XSF_NOT_FIRST;
+    else
+	xop->xo_stack[xop->xo_depth].xs_flags |= XSF_NOT_FIRST;
 
     rc = xo_printf(xop, "%s%*s\"%s\": [%s",
 		   pre_nl, xo_indent(xop), "", name, ppn);
@@ -3896,6 +3932,40 @@ xo_close_list_d (void)
     return xo_close_list_h(NULL, NULL);
 }
 
+static void
+xo_close_other_list_h (xo_handle_t *xop, const char *name)
+{
+    xo_stack_t *xsp;
+
+    if ((xop->xo_flags & XOF_AUTO_LIST) == 0)
+	return;
+
+    xsp = xop->xo_stack + xop->xo_depth;
+//fprintf(stderr, "\nCLOSE_OTHER_LIST(name=%s, flags=%x, DEPTH=%d)", xsp->xs_name, xsp->xs_flags & XSF_LIST, xop->xo_depth); //
+    if ((xsp->xs_flags & XSF_LIST) != 0 && xsp->xs_name == NULL)
+//fprintf(stderr, " ---> LIST OPEN but NAME == NULL\n"); //
+    if ((xsp->xs_flags & XSF_LIST) != 0 && strcmp(xsp->xs_name, name) != 0)
+	xo_close_list_h(xop, xsp->xs_name);
+    else
+//fprintf(stderr, "\n--> NOP\n"); //
+}
+
+static void
+xo_open_implicit_list_h (xo_handle_t *xop, const char *name)
+{
+    xo_stack_t *xsp;
+
+    if ((xop->xo_flags & XOF_AUTO_LIST) == 0)
+	return;
+
+    xsp = xop->xo_stack + xop->xo_depth;
+//fprintf(stderr, "\nOPEN_IMPLICIT_LIST(name=%s) XSP=%s", name, xsp->xs_name); //
+    if (xsp->xs_name == NULL || strcmp(xsp->xs_name, name) != 0)
+	xo_open_list_hf(xop, 0, name);
+    else
+//fprintf(stderr, "\n--> NOP\n"); //
+}
+
 static int
 xo_open_instance_hf (xo_handle_t *xop, xo_xsf_flags_t flags, const char *name)
 {
@@ -3911,6 +3981,9 @@ xo_open_instance_hf (xo_handle_t *xop, xo_xsf_flags_t flags, const char *name)
 	xo_failure(xop, "NULL passed for instance name");
 	name = XO_FAILURE_NAME;
     }
+
+    xo_close_other_list_h(xop, name);
+    xo_open_implicit_list_h(xop, name);
 
     switch (xop->xo_style) {
     case XO_STYLE_XML:
@@ -3987,6 +4060,8 @@ xo_close_instance_h (xo_handle_t *xop, const char *name)
 	} else
 	    name = XO_FAILURE_NAME;
     }
+
+    xo_close_other_list_h(xop, "");
 
     switch (xop->xo_style) {
     case XO_STYLE_XML:
@@ -4081,6 +4156,8 @@ xo_finish_h (xo_handle_t *xop)
     const char *cp = "";
     xop = xo_default(xop);
 
+    xo_close_other_list_h(xop, "");
+
     switch (xop->xo_style) {
     case XO_STYLE_JSON:
 	if (!(xop->xo_flags & XOF_NO_TOP)) {
@@ -4123,6 +4200,7 @@ xo_error_hv (xo_handle_t *xop, const char *fmt, va_list vap)
 	fmt = newfmt;
     }
 
+// <se> no error message for JSON???
     switch (xop->xo_style) {
     case XO_STYLE_TEXT:
 	vfprintf(stderr, fmt, vap);

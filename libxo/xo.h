@@ -54,6 +54,7 @@ typedef unsigned long xo_xof_flags_t;
 #define XOF_UNDERSCORES	(1<<20)	/** Replace dashes with underscores (JSON)  */
 #define XOF_COLUMNS	(1<<21)	/** xo_emit should return a column count */
 #define XOF_FLUSH	(1<<22)	/** Flush after each xo_emit call */
+#define XOF_AUTO_LIST	(1<<23)	/** Automatically wrap instances into lists */
 
 /*
  * The xo_info_t structure provides a mapping between names and
