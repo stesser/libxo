@@ -69,10 +69,20 @@ typedef struct xo_stack_s {
     char *xs_name;		/* Name (for XPath value) */
     char *xs_keys;		/* XPath predicate for any key fields */
 #ifdef ENTERLEAVE
-    int enter_count;		/* Number of open xo_enter calls */
-    int enter_nameidx;		/* Index to name of xo_enter frame */
+    int xs_el_count;		/* Number of open xo_enter calls */
+    int xs_el_nameidx;		/* Index to name of xo_enter frame */
 #endif
 } xo_stack_t;
+
+#ifdef ENTERLEAVE
+/*
+ * xo_el_stack_t: The name parameter to xo_enter and xo_leave
+ * is only used for consistency checks and debugging.
+ */
+typedef struct xo_el_stack_s {
+	char *xe_name;		/* Name passed to xo_enter() */
+} xo_el_stack_t;
+#endif
 
 /*
  * xo_handle_t: this is the principle data structure for libxo.
@@ -96,6 +106,10 @@ struct xo_handle_s {
     xo_stack_t *xo_stack;	/* Stack pointer */
     int xo_depth;		/* Depth of stack */
     int xo_stack_size;		/* Size of the stack */
+#ifdef ENTERLEAVE
+    xo_el_stack_t *xo_el_stack;	/* Enter/leave stack pointer */
+    int xo_el_stack_size;	/* Size of the enter/leave stack */
+#endif
     xo_info_t *xo_info;		/* Info fields for all elements */
     int xo_info_count;		/* Number of info entries */
     va_list xo_vap;		/* Variable arguments (stdargs) */
@@ -340,7 +354,6 @@ xo_init_handle (xo_handle_t *xop)
 
     xop->xo_indent_by = XO_INDENT_BY;
     xo_depth_check(xop, XO_DEPTH);
-
 #if !defined(NO_LIBXO_OPTIONS)
     if (!(xop->xo_flags & XOF_NO_ENV)) {
 	char *env = getenv("LIBXO_OPTIONS");
@@ -348,6 +361,7 @@ xo_init_handle (xo_handle_t *xop)
 	    xo_set_options(xop, env);
     }
 #endif /* NO_GETENV */
+    xo_enter_h(xop, "");
 }
 
 /*
@@ -2885,8 +2899,8 @@ xo_format_value (xo_handle_t *xop, const char *name, int nlen,
 	    name = cp;
 	}
 
+	xo_close_other_list_h(xop, name);
 	if (flags & XFF_LEAF_LIST) {
-	    xo_close_other_list_h(xop, name);
 	    xo_open_implicit_list_h(xop, name);
 	}
 
@@ -3595,9 +3609,13 @@ xo_depth_change (xo_handle_t *xop, const char *name,
 	if (xo_depth_check(xop, xop->xo_depth + delta))
 	    return;
 
-	xo_stack_t *xsp = &xop->xo_stack[xop->xo_depth + delta];
+	xo_stack_t *xsp = xop->xo_stack + xop->xo_depth;
+	int nameidx = xsp->xs_el_nameidx + xsp->xs_el_count;
+
+	xsp += delta;
 	xsp->xs_flags = flags;
 	xo_stack_set_flags(xop);
+	xsp->xs_el_nameidx = nameidx;
 
 	unsigned save = (xop->xo_flags & (XOF_XPATH | XOF_WARN | XOF_DTRT | XOF_AUTO_LIST));
 	save |= (flags & XSF_DTRT);
@@ -3947,11 +3965,11 @@ xo_close_other_list_h (xo_handle_t *xop, const char *name)
 
     xsp = xop->xo_stack + xop->xo_depth;
 //fprintf(stderr, "\nCLOSE_OTHER_LIST(name=%s, flags=%x, DEPTH=%d)", xsp->xs_name, xsp->xs_flags & XSF_LIST, xop->xo_depth); //
-    if ((xsp->xs_flags & XSF_LIST) != 0 && xsp->xs_name == NULL)
+//    if ((xsp->xs_flags & XSF_LIST) != 0 && xsp->xs_name == NULL)
 //fprintf(stderr, " ---> LIST OPEN but NAME == NULL\n"); //
     if ((xsp->xs_flags & XSF_LIST) != 0 && strcmp(xsp->xs_name, name) != 0)
 	xo_close_list_h(xop, xsp->xs_name);
-    else
+//    else
 //fprintf(stderr, "\n--> NOP\n"); //
 }
 
@@ -3967,7 +3985,7 @@ xo_open_implicit_list_h (xo_handle_t *xop, const char *name)
 //fprintf(stderr, "\nOPEN_IMPLICIT_LIST(name=%s) XSP=%s", name, xsp->xs_name); //
     if (xsp->xs_name == NULL || strcmp(xsp->xs_name, name) != 0)
 	xo_open_list_hf(xop, 0, name);
-    else
+//    else
 //fprintf(stderr, "\n--> NOP\n"); //
 }
 
@@ -4121,17 +4139,64 @@ xo_set_writer (xo_handle_t *xop, void *opaque, xo_write_func_t write_func,
 }
 
 #ifdef ENTERLEAVE
+static void
+xo_push_el_name_h (xo_handle_t *xop, const char *name)
+{
+    xo_stack_t *xsp = xop->xo_stack + xop->xo_depth;
+    int idx = xsp->xs_el_nameidx + xsp->xs_el_count;
+    xo_el_stack_t *xep;
+
+    if (idx >= xop->xo_el_stack_size) {
+	int newsize = xop->xo_el_stack_size += 16;
+	xep = xo_realloc(xop->xo_el_stack, sizeof(xop->xo_el_stack[0]) * newsize);
+	if (xep == NULL) {
+	    xo_failure(xop, "set_enter_name: out of memory (%d)", newsize);
+	    return;
+	}
+
+	int count = newsize - xop->xo_el_stack_size;
+
+	bzero(xep + xop->xo_el_stack_size, count * sizeof(*xep));
+	xop->xo_el_stack_size = newsize;
+	xop->xo_el_stack = xep;
+    }
+    if (name) {
+	int len = strlen(name) + 1;
+	char *cp = xo_realloc(NULL, len);
+	if (cp) {
+	    memcpy(cp, name, len);
+	    xop->xo_el_stack[idx].xe_name = cp;
+	}
+    }
+}
+
+static void
+xo_pop_el_name_h (xo_handle_t *xop, const char *name)
+{
+    xo_stack_t *xsp = xop->xo_stack + xop->xo_depth;
+    int idx = xsp->xs_el_nameidx + xsp->xs_el_count - 1;
+
+    xo_el_stack_t *xep = xop->xo_el_stack;
+
+    if (xep == NULL || idx < 0)
+	xo_failure(xop, "check_enter_name: no previous xo_enter()");
+    if (idx >= xop->xo_el_stack_size)
+	xo_failure(xop, "check_enter_name: internal error");
+    if (strcmp(xep[idx].xe_name, name) != 0)
+	xo_failure(xop, "check_enter_name: xo_leave(%s) does not match xo_enter(%s)",
+	    name, xep[idx].xe_name);
+    free(xep[idx].xe_name);
+    xep[idx].xe_name = NULL;
+}
+
 void
 xo_enter_h (xo_handle_t *xop, const char *name)
 {
     xo_stack_t *xsp;
 
-    if (name == NULL)	// dummy test to prevent unused "name" error
-	return;
-
     xsp = xop->xo_stack + xop->xo_depth;
-    xsp->enter_count++;
-//    set_enter_name(name, xsp->enter_nameidx + xsp->enter_count]);
+    xo_push_el_name_h(xop, name);
+    xsp->xs_el_count++;
 }
 
 void
@@ -4139,14 +4204,11 @@ xo_leave_h (xo_handle_t *xop, const char *name)
 {
     xo_stack_t *xsp;
 
-    if (name == NULL)
-	return;
-
     while (xop->xo_depth >= 0) {
 	int flags;
 
 	xsp = xop->xo_stack + xop->xo_depth;
-	if (xsp->enter_count > 0)
+	if (xsp->xs_el_count > 0)
 	    break;
 
         flags = xsp->xs_flags;
@@ -4157,10 +4219,12 @@ xo_leave_h (xo_handle_t *xop, const char *name)
 	else
 	    xo_close_container_h(xop, xsp->xs_name);
     }
-    if (xop->xo_depth < 0)
-	xo_err(1, "stack underrun in leave");
-//  check_enter_name(name, xsp->enter_nameidx + xsp->enter_count]);
-    xsp->enter_count--;
+    if (xop->xo_depth < 0) {
+	    xo_failure(xop, "stack underrun in xo_leave()");
+	return;
+    }
+    xo_pop_el_name_h(xop, name);
+    xsp->xs_el_count--;
 }
 
 void
@@ -4217,7 +4281,8 @@ xo_finish_h (xo_handle_t *xop)
     const char *cp = "";
     xop = xo_default(xop);
 
-    xo_close_other_list_h(xop, "");
+    xo_leave_h(xop, "");
+//  xo_close_other_list_h(xop, "");
 
     switch (xop->xo_style) {
     case XO_STYLE_JSON:
